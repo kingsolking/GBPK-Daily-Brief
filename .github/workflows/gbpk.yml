@@ -1,0 +1,8 @@
+name: test-gbpk
+on:
+  workflow_dispatch:
+jobs:
+  say-hi:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "hi from gbpk"
