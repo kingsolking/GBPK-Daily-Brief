@@ -1,105 +1,35 @@
-import os
-import psycopg2
 import feedparser
-from datetime import datetime, timezone
 
-DB_URL = os.getenv("DATABASE_URL")
+# Define the sources you want to pull from
+RSS_FEEDS = {
+    "Reuters": "http://feeds.reuters.com/reuters/businessNews",
+    "Bloomberg": "https://feeds.bloomberg.com/markets/news.rss",
+    "NYTimes": "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml",
+    "TechCrunch": "https://techcrunch.com/feed/",
+    "CNN Business": "http://rss.cnn.com/rss/money_latest.rss",
+    "Food Business News": "https://www.foodbusinessnews.net/rss/topic/81-consumer-trends"
+}
 
-FEEDS = [
-    "https://techcrunch.com/feed/",
-    "https://www.modernretail.co/feed/",
-    "https://www.fooddive.com/feeds/news/",
-    "https://www.retaildive.com/feeds/news/",
-    "https://www.fastcompany.com/rss",
-    "https://www.prnewswire.com/rss/consumer-products-latest-news.rss",
-]
+# Filter topics relevant to your audience
+KEYWORDS = ["consumer", "retail", "brand", "food", "CPG", "snack", "startup", "AI"]
 
-KEYWORDS = [
-    "consumer",
-    "brand",
-    "cpg",
-    "food",
-    "beverage",
-    "beauty",
-    "skincare",
-    "launch",
-    "raised",
-    "funding",
-    "retail",
-    "ecommerce",
-]
+def get_news_items():
+    articles = []
 
-
-def passes_filter(title: str) -> bool:
-    title_lower = title.lower()
-    return any(k in title_lower for k in KEYWORDS)
-
-
-def ensure_table():
-    conn = psycopg2.connect(DB_URL)
-    cur = conn.cursor()
-    # make company_id nullable (in case it isn't)
-    try:
-        cur.execute("alter table news_articles alter column company_id drop not null;")
-    except Exception:
-        pass
-    # add unique on url to avoid duplicates
-    cur.execute("""
-        do $$
-        begin
-            if not exists (
-                select 1 from pg_constraint where conname = 'unique_news_url'
-            ) then
-                alter table news_articles
-                add constraint unique_news_url unique (url);
-            end if;
-        end$$;
-    """)
-    conn.commit()
-    cur.close()
-    conn.close()
-
-
-def insert_article(title, source, url, published_at):
-    conn = psycopg2.connect(DB_URL)
-    cur = conn.cursor()
-    cur.execute("""
-        insert into news_articles (company_id, headline, source, url, published_at)
-        values (null, %s, %s, %s, %s)
-        on conflict (url) do nothing;
-    """, (title, source, url, published_at))
-    conn.commit()
-    cur.close()
-    conn.close()
-
-
-def main():
-    ensure_table()
-    for feed_url in FEEDS:
-        parsed = feedparser.parse(feed_url)
-        for entry in parsed.entries:
-            title = entry.get("title") or ""
-            if not title:
-                continue
-            if not passes_filter(title):
-                continue
-
-            link = entry.get("link")
-            # some feeds report source differently — we'll fall back to feed url
-            source = None
-            if entry.get("source") and entry["source"].get("title"):
-                source = entry["source"]["title"]
-            else:
-                source = feed_url
-
-            published = entry.get("published_parsed")
-            if published:
-                published_at = datetime(*published[:6], tzinfo=timezone.utc)
-            else:
-                published_at = datetime.now(timezone.utc)
-
-            insert_article(title, source, link, published_at)
-
+    for source, url in RSS_FEEDS.items():
+        feed = feedparser.parse(url)
+        for entry in feed.entries[:10]:
+            title = entry.title
+            link = entry.link
+            summary = entry.get("summary", "")
+            if any(word.lower() in title.lower() or word.lower() in summary.lower() for word in KEYWORDS):
+                articles.append({
+                    "source": source,
+                    "title": title,
+                    "link": link
+                })
+    return articles
 
 if __name__ == "__main__":
-    main()
+    from pprint import pprint
+    pprint(get_news_items())
