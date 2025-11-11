@@ -1,15 +1,13 @@
 import os
 import psycopg2
 from datetime import date
-from email.mime.text import MIMEText
+from email.mime_text import MIMEText
 import smtplib
 
-# env vars from GitHub Actions
 DB_URL = os.getenv("DATABASE_URL")
 EMAIL_USER = os.getenv("EMAIL_USER")
 EMAIL_PASS = os.getenv("EMAIL_PASS")
 
-# recipients
 RECIPIENTS = [
     "solomon@gbpkcompany.com",
 ]
@@ -77,57 +75,68 @@ def get_todays_items():
 
 
 def emoji_for_type(event_type: str) -> str:
-    if event_type == "funding":
-        return "💰"
-    if event_type == "launch":
-        return "🚀"
-    if event_type == "revenue_milestone":
-        return "📈"
-    if event_type == "news":
-        return "🗞️"
-    return "✨"
+    return {
+        "funding": "💰",
+        "launch": "🚀",
+        "revenue_milestone": "📈",
+        "news": "🗞️",
+    }.get(event_type, "✨")
 
 
 def format_html(rows):
     today_str = date.today().strftime("%b %d, %Y")
     html_parts = [
-        f"<h2 style='font-family:Helvetica;margin-bottom:10px;'>Daily GBPK Brief — {today_str}</h2>",
-        "<div style='font-family:Helvetica;line-height:1.6;font-size:14px;'>"
+        "<!doctype html>",
+        "<html><body style='font-family:Helvetica,Arial,sans-serif;background:#f6f6f6;padding:20px;'>",
+        "<table role='presentation' style='max-width:640px;margin:0 auto;background:#ffffff;border-radius:8px;padding:20px 24px;'>",
+        f"<tr><td><h2 style='margin:0 0 12px 0;'>Daily GBPK Brief — {today_str}</h2>",
+        "<p style='margin:0 0 16px 0;color:#666;'>Top activity from companies you care about.</p>",
+        "<hr style='border:none;border-top:1px solid #eee;margin:16px 0;'>",
     ]
-    for (
-        _the_date,
-        company,
-        sector,
-        event_type,
-        title,
-        amount,
-        currency,
-        source,
-        url,
-    ) in rows:
-        emoji = emoji_for_type(event_type)
 
-        if event_type == "funding" and amount:
-            amt = f"${int(amount):,}"
-            text = f"{emoji} <b>{company}</b> raised {amt} {title.replace(company, '').strip()} ({sector})"
-        elif event_type == "launch":
-            text = f"{emoji} <b>{company}</b> launched {title} ({sector})"
-        elif event_type == "revenue_milestone":
-            text = f"{emoji} <b>{company}</b> reported {title} ({sector})"
-        elif event_type == "news":
-            text = f"{emoji} <b>{company}</b> {title} ({sector})"
-        else:
-            text = f"{emoji} <b>{company}</b> {title} ({sector})"
+    if not rows:
+        html_parts.append("<p>No items for today.</p>")
+    else:
+        for (
+            _the_date,
+            company,
+            sector,
+            event_type,
+            title,
+            amount,
+            currency,
+            source,
+            url,
+        ) in rows:
 
-        if url:
-            text += f" <a href='{url}' style='color:#0073e6;text-decoration:none;'>[{source}]</a>"
-        elif source:
-            text += f" [{source}]"
+            emoji = emoji_for_type(event_type)
 
-        html_parts.append(f"<p style='margin:6px 0;'>{text}</p>")
+            if event_type == "funding" and amount:
+                amt = f\"${int(amount):,}\"
+                line = f\"{emoji} <b>{company}</b> raised {amt} {title.replace(company, '').strip()} ({sector})\"
+            elif event_type == "launch":
+                line = f\"{emoji} <b>{company}</b> launched {title} ({sector})\"
+            elif event_type == "revenue_milestone":
+                line = f\"{emoji} <b>{company}</b> reported {title} ({sector})\"
+            elif event_type == "news":
+                line = f\"{emoji} <b>{company}</b> {title} ({sector})\"
+            else:
+                line = f\"{emoji} <b>{company}</b> {title} ({sector})\"
 
-    html_parts.append("</div>")
-    return "\n".join(html_parts)
+            if url:
+                line += f\" <a href='{url}' style='color:#0b5ed7;text-decoration:none;'>[{source}]</a>\"
+            elif source:
+                line += f\" [{source}]\"
+
+            html_parts.append(
+                f\"<p style='margin:6px 0 8px 0; line-height:1.5;'>{line}</p>\"
+            )
+
+    html_parts.append("<hr style='border:none;border-top:1px solid #eee;margin:16px 0;'>")
+    html_parts.append("<p style='font-size:12px;color:#999;margin:0;'>GBPK internal daily brief.</p>")
+    html_parts.append("</td></tr></table></body></html>")
+
+    return "".join(html_parts)
 
 
 def send_email(html_body):
@@ -144,9 +153,5 @@ def send_email(html_body):
 
 if __name__ == "__main__":
     rows = get_todays_items()
-    if not rows:
-        today_str = date.today().strftime("%b %d, %Y")
-        html = f"<h2>Daily GBPK Brief — {today_str}</h2><p>No items today.</p>"
-    else:
-        html = format_html(rows)
+    html = format_html(rows)
     send_email(html)
