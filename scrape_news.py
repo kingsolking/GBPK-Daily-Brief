@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 
 DB_URL = os.getenv("DATABASE_URL")
 
-# we keep your good consumer feeds AND add big business feeds
 FEEDS = [
     # consumer / retail / brand
     "https://www.modernretail.co/feed/",
@@ -13,15 +12,13 @@ FEEDS = [
     "https://www.fooddive.com/feeds/news/",
     "https://techcrunch.com/feed/",
     "https://www.fastcompany.com/rss",
-
-    # bigger business / finance
-    "http://feeds.reuters.com/reuters/businessNews",
-    "https://feeds.bloomberg.com/markets/news.rss",
+    # bigger business
     "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml",
+    "https://feeds.bloomberg.com/markets/news.rss",
+    "http://feeds.reuters.com/reuters/businessNews",
     "http://rss.cnn.com/rss/money_latest.rss",
 ]
 
-# broadened keywords so big feeds actually match
 KEYWORDS = [
     "consumer", "retail", "brand", "shopper",
     "food", "beverage", "cpg", "snack",
@@ -32,6 +29,9 @@ KEYWORDS = [
     "amazon", "target", "walmart", "costco", "shein",
 ]
 
+# how many we want per day
+MAX_STORIES = 15
+
 
 def passes_filter(title: str, summary: str) -> bool:
     text = f"{title} {summary}".lower()
@@ -41,12 +41,10 @@ def passes_filter(title: str, summary: str) -> bool:
 def ensure_table():
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
-    # make company_id nullable if it isn't
     try:
         cur.execute("alter table news_articles alter column company_id drop not null;")
     except Exception:
         pass
-    # make url unique so we don't insert the same story twice
     cur.execute("""
         do $$
         begin
@@ -64,10 +62,7 @@ def ensure_table():
 
 
 def insert_article(title, source, url):
-    # force today's timestamp so your email (which filters on current_date)
-    # actually sees this story
     published_at = datetime.now(timezone.utc)
-
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
     cur.execute("""
@@ -83,29 +78,45 @@ def insert_article(title, source, url):
 def main():
     ensure_table()
 
+    seen_urls = set()
+    collected = []
+
+    # walk feeds in order and stop once we have MAX_STORIES
     for feed_url in FEEDS:
         parsed = feedparser.parse(feed_url)
         for entry in parsed.entries:
+            if len(collected) >= MAX_STORIES:
+                break
+
             title = entry.get("title") or ""
             summary = entry.get("summary", "")
-            if not title:
+            link = entry.get("link")
+
+            if not title or not link:
+                continue
+
+            # de-dupe by link
+            if link in seen_urls:
                 continue
 
             if not passes_filter(title, summary):
                 continue
 
-            link = entry.get("link")
-            if not link:
-                continue
-
-            # try to get a nice source name, otherwise fall back to feed url
-            src = None
+            # get a decent source name
             if entry.get("source") and entry["source"].get("title"):
                 src = entry["source"]["title"]
             else:
                 src = feed_url
 
-            insert_article(title, src, link)
+            collected.append((title, src, link))
+            seen_urls.add(link)
+
+        if len(collected) >= MAX_STORIES:
+            break
+
+    # write to DB
+    for title, src, link in collected:
+        insert_article(title, src, link)
 
 
 if __name__ == "__main__":
