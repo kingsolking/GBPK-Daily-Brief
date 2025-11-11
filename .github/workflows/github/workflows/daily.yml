@@ -1,0 +1,30 @@
+name: Daily Consumer People Brief
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 11 * * *"  # 11:00 UTC = 6 AM ET
+
+jobs:
+  run-daily-brief:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install psycopg2-binary feedparser
+
+      - name: Scrape news sources
+        run: python scrape_news.py
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Send email brief
+        run: python send_brief.py
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
