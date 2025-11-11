@@ -4,69 +4,73 @@ from datetime import date
 from email.mime.text import MIMEText
 import smtplib
 
-# env vars from GitHub
 DB_URL = os.getenv("DATABASE_URL")
 EMAIL_USER = os.getenv("EMAIL_USER")
 EMAIL_PASS = os.getenv("EMAIL_PASS")
 
 RECIPIENTS = [
     "solomon@gbpkcompany.com",
-    # add more here
 ]
 
-
-def fetch_today():
-    """
-    Get today's events + news separately so we can group in Python.
-    """
+def get_todays_items():
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
-
-    # events: funding / launch / revenue_milestone / whatever
     cur.execute("""
+        with todays_events as (
+            select
+                e.event_date::date as the_date,
+                c.name as company_name,
+                c.sector,
+                e.event_type,
+                e.title,
+                e.amount::numeric,
+                e.currency::text,
+                e.source::text,
+                e.source_url as url,
+                coalesce(e.score, 0) as score
+            from events e
+            join companies c on c.id = e.company_id
+            where e.event_date::date = current_date
+        ),
+        todays_news as (
+            select
+                n.published_at::date as the_date,
+                c.name as company_name,
+                c.sector,
+                'news' as event_type,
+                n.headline as title,
+                null::numeric as amount,
+                null::text as currency,
+                n.source::text as source,
+                n.url as url,
+                0 as score
+            from news_articles n
+            join companies c on c.id = n.company_id
+            where n.published_at::date = current_date
+        ),
+        all_items as (
+            select * from todays_events
+            union all
+            select * from todays_news
+        ),
+        ranked as (
+            select
+                *,
+                row_number() over (
+                    order by score desc, the_date desc, company_name asc
+                ) as rn
+            from all_items
+        )
         select
-            e.event_date::date as the_date,
-            c.name as company_name,
-            c.sector,
-            e.event_type,
-            e.title,
-            e.amount::numeric,
-            e.currency::text,
-            e.source::text,
-            e.source_url as url,
-            coalesce(e.score, 0) as score
-        from events e
-        join companies c on c.id = e.company_id
-        where e.event_date::date = current_date
-        order by score desc, e.event_date desc, c.name asc
-        limit 50;
+            the_date, company_name, sector, event_type, title,
+            amount, currency, source, url
+        from ranked
+        where rn <= 12;
     """)
-    events = cur.fetchall()
-
-    # news
-    cur.execute("""
-        select
-            n.published_at::date as the_date,
-            c.name as company_name,
-            c.sector,
-            'news' as event_type,
-            n.headline as title,
-            null::numeric as amount,
-            null::text as currency,
-            n.source::text as source,
-            n.url as url,
-            0 as score
-        from news_articles n
-        join companies c on c.id = n.company_id
-        where n.published_at::date = current_date
-        order by n.published_at desc, c.name asc
-        limit 50;
-    """)
-    news = cur.fetchall()
-
+    rows = cur.fetchall()
     cur.close()
     conn.close()
-    return events, news
+    return rows
 
 
 def emoji_for_type(event_type: str) -> str:
@@ -78,14 +82,21 @@ def emoji_for_type(event_type: str) -> str:
     }.get(event_type, "✨")
 
 
-def build_sections(events, news):
-    funding = []
-    launches = []
-    revenue = []
-    # news is already separate
+def format_html(rows):
+    today_str = date.today().strftime("%b %d, %Y")
+    html_parts = [
+        "<!doctype html>",
+        "<html><body style='font-family:Helvetica,Arial,sans-serif;background:#f6f6f6;padding:20px;'>",
+        "<table role='presentation' style='max-width:640px;margin:0 auto;background:#ffffff;border-radius:8px;padding:20px 24px;'>",
+        f"<tr><td><h2 style='margin:0 0 12px 0;'>Daily Consumer People Brief — {today_str}</h2>",
+        "<p style='margin:0 0 16px 0;color:#666;'>Top activity from companies you care about.</p>",
+        "<hr style='border:none;border-top:1px solid #eee;margin:16px 0;'>",
+    ]
 
-    for row in events:
-        (
+    if not rows:
+        html_parts.append("<p>No items for today.</p>")
+    else:
+        for (
             _the_date,
             company,
             sector,
@@ -95,157 +106,36 @@ def build_sections(events, news):
             currency,
             source,
             url,
-            _score,
-        ) = row
+        ) in rows:
 
-        funding_line = None
+            emoji = emoji_for_type(event_type)
 
-        if event_type == "funding":
-            # format funding
-            if amount:
+            if event_type == "funding" and amount:
                 amt = f"${int(amount):,}"
-                funding_line = (
-                    f"{emoji_for_type('funding')} <b>{company}</b> raised {amt} "
-                    f"{title.replace(company, '').strip()} ({sector})"
-                )
+                line = f"{emoji} <b>{company}</b> raised {amt} {title.replace(company, '').strip()} ({sector})"
+            elif event_type == "launch":
+                line = f"{emoji} <b>{company}</b> launched {title} ({sector})"
+            elif event_type == "revenue_milestone":
+                line = f"{emoji} <b>{company}</b> reported {title} ({sector})"
+            elif event_type == "news":
+                line = f"{emoji} <b>{company}</b> {title} ({sector})"
             else:
-                funding_line = (
-                    f"{emoji_for_type('funding')} <b>{company}</b> {title} ({sector})"
-                )
-            if url:
-                funding_line += f" <a href='{url}' style='color:#0b5ed7;text-decoration:none;'>[{source}]</a>"
-            elif source:
-                funding_line += f" [{source}]"
-            funding.append((amount or 0, funding_line))
+                line = f"{emoji} <b>{company}</b> {title} ({sector})"
 
-        elif event_type == "launch":
-            line = (
-                f"{emoji_for_type('launch')} <b>{company}</b> launched {title} ({sector})"
+            if url:
+                line += f" <a href='{url}' style='color:#0b5ed7;text-decoration:none;'>[{source}]</a>"
+            elif source:
+                line += f" [{source}]"
+
+            html_parts.append(
+                f"<p style='margin:6px 0 8px 0; line-height:1.5;'>{line}</p>"
             )
-            if url:
-                line += f" <a href='{url}' style='color:#0b5ed7;text-decoration:none;'>[{source}]</a>"
-            elif source:
-                line += f" [{source}]"
-            launches.append(line)
 
-        elif event_type == "revenue_milestone":
-            line = (
-                f"{emoji_for_type('revenue_milestone')} <b>{company}</b> reported {title} ({sector})"
-            )
-            if url:
-                line += f" <a href='{url}' style='color:#0b5ed7;text-decoration:none;'>[{source}]</a>"
-            elif source:
-                line += f" [{source}]"
-            revenue.append(line)
+    html_parts.append("<hr style='border:none;border-top:1px solid #eee;margin:16px 0;'>")
+    html_parts.append("<p style='font-size:12px;color:#999;margin:0;'>Consumer People internal daily brief.</p>")
+    html_parts.append("</td></tr></table></body></html>")
 
-        else:
-            # dump anything else into launches-ish bucket
-            line = f"{emoji_for_type(event_type)} <b>{company}</b> {title} ({sector})"
-            if url:
-                line += f" <a href='{url}' style='color:#0b5ed7;text-decoration:none;'>[{source}]</a>"
-            elif source:
-                line += f" [{source}]"
-            launches.append(line)
-
-    # news formatting
-    news_lines = []
-    for row in news:
-        (
-            _the_date,
-            company,
-            sector,
-            _event_type,
-            title,
-            _amount,
-            _currency,
-            source,
-            url,
-            _score,
-        ) = row
-        line = f"{emoji_for_type('news')} <b>{company}</b> {title} ({sector})"
-        if url:
-            line += f" <a href='{url}' style='color:#0b5ed7;text-decoration:none;'>[{source}]</a>"
-        elif source:
-            line += f" [{source}]"
-        news_lines.append(line)
-
-    return funding, launches, revenue, news_lines
-
-
-def summarize_top(funding, launches, revenue, news_lines):
-    funding_count = len(funding)
-    launch_count = len(launches)
-    revenue_count = len(revenue)
-    news_count = len(news_lines)
-
-    # sum disclosed funding (first element is amount)
-    total_disclosed = int(sum(f[0] for f in funding if f[0]))
-
-    summary_bits = []
-    summary_bits.append(f"{funding_count} funding" if funding_count else "0 funding")
-    if launch_count:
-        summary_bits.append(f"{launch_count} launches")
-    if revenue_count:
-        summary_bits.append(f"{revenue_count} rev updates")
-    if news_count:
-        summary_bits.append(f"{news_count} news")
-
-    summary_line = " · ".join(summary_bits)
-
-    if total_disclosed:
-        summary_line += f" · ${total_disclosed:,} disclosed"
-
-    return summary_line
-
-
-def format_html(funding, launches, revenue, news_lines):
-    today_str = date.today().strftime("%b %d, %Y")
-    summary_line = summarize_top(funding, launches, revenue, news_lines)
-
-    html = [
-        "<!doctype html>",
-        "<html><body style='font-family:Helvetica,Arial,sans-serif;background:#f6f6f6;padding:20px;'>",
-        "<table role='presentation' style='max-width:640px;margin:0 auto;background:#ffffff;border-radius:8px;padding:20px 24px;'>",
-        f"<tr><td><h2 style='margin:0 0 6px 0;'>Daily Consumer People Brief — {today_str}</h2>",
-        f"<p style='margin:0 0 16px 0;color:#555;font-size:13px;'>{summary_line}</p>",
-        "<hr style='border:none;border-top:1px solid #eee;margin:16px 0;'>",
-    ]
-
-    # Funding section
-    if funding:
-        html.append("<h3 style='margin:0 0 8px 0;font-size:15px;'>💰 Funding</h3>")
-        for _amt, line in funding:
-            html.append(f"<p style='margin:5px 0 5px 0;'>{line}</p>")
-        html.append("<hr style='border:none;border-top:1px solid #f0f0f0;margin:14px 0;'>")
-
-    # Launches section
-    if launches:
-        html.append("<h3 style='margin:0 0 8px 0;font-size:15px;'>🚀 Launches & Product</h3>")
-        for line in launches:
-            html.append(f"<p style='margin:5px 0 5px 0;'>{line}</p>")
-        html.append("<hr style='border:none;border-top:1px solid #f0f0f0;margin:14px 0;'>")
-
-    # Revenue
-    if revenue:
-        html.append("<h3 style='margin:0 0 8px 0;font-size:15px;'>📈 Revenue & Growth</h3>")
-        for line in revenue:
-            html.append(f"<p style='margin:5px 0 5px 0;'>{line}</p>")
-        html.append("<hr style='border:none;border-top:1px solid #f0f0f0;margin:14px 0;'>")
-
-    # News
-    if news_lines:
-        html.append("<h3 style='margin:0 0 8px 0;font-size:15px;'>🗞️ In the News</h3>")
-        for line in news_lines:
-            html.append(f"<p style='margin:5px 0 5px 0;'>{line}</p>")
-
-    if not (funding or launches or revenue or news_lines):
-        html.append("<p>No items for today.</p>")
-
-    html.append("<hr style='border:none;border-top:1px solid #eee;margin:16px 0;'>")
-    html.append("<p style='font-size:12px;color:#999;margin:0;'>Consumer People internal daily brief.</p>")
-    html.append("</td></tr></table></body></html>")
-
-    return "".join(html)
+    return "".join(html_parts)
 
 
 def send_email(html_body):
@@ -261,7 +151,6 @@ def send_email(html_body):
 
 
 if __name__ == "__main__":
-    events, news = fetch_today()
-    funding, launches, revenue, news_lines = build_sections(events, news)
-    html = format_html(funding, launches, revenue, news_lines)
+    rows = get_todays_items()
+    html = format_html(rows)
     send_email(html)
