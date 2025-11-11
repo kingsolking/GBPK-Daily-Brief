@@ -4,25 +4,20 @@ from datetime import date
 from email.mime.text import MIMEText
 import smtplib
 
-# env vars from GitHub
 DB_URL = os.getenv("DATABASE_URL")
 EMAIL_USER = os.getenv("EMAIL_USER")
 EMAIL_PASS = os.getenv("EMAIL_PASS")
 
 RECIPIENTS = [
     "solomon@gbpkcompany.com",
-    # add more here
 ]
 
 
 def fetch_today():
-    """
-    Get today's events + news separately so we can group in Python.
-    """
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
 
-    # events: funding / launch / revenue_milestone / whatever
+    # events (from your events table)
     cur.execute("""
         select
             e.event_date::date as the_date,
@@ -43,12 +38,12 @@ def fetch_today():
     """)
     events = cur.fetchall()
 
-    # news
+    # news (now allowing null company_id)
     cur.execute("""
         select
             n.published_at::date as the_date,
-            c.name as company_name,
-            c.sector,
+            coalesce(c.name, 'General') as company_name,
+            coalesce(c.sector, 'General') as sector,
             'news' as event_type,
             n.headline as title,
             null::numeric as amount,
@@ -57,9 +52,9 @@ def fetch_today():
             n.url as url,
             0 as score
         from news_articles n
-        join companies c on c.id = n.company_id
+        left join companies c on c.id = n.company_id
         where n.published_at::date = current_date
-        order by n.published_at desc, c.name asc
+        order by n.published_at desc
         limit 50;
     """)
     news = cur.fetchall()
@@ -82,46 +77,36 @@ def build_sections(events, news):
     funding = []
     launches = []
     revenue = []
-    # news is already separate
+    news_lines = []
 
-    for row in events:
-        (
-            _the_date,
-            company,
-            sector,
-            event_type,
-            title,
-            amount,
-            currency,
-            source,
-            url,
-            _score,
-        ) = row
-
-        funding_line = None
+    # events
+    for (
+        _the_date,
+        company,
+        sector,
+        event_type,
+        title,
+        amount,
+        currency,
+        source,
+        url,
+        _score,
+    ) in events:
 
         if event_type == "funding":
-            # format funding
             if amount:
                 amt = f"${int(amount):,}"
-                funding_line = (
-                    f"{emoji_for_type('funding')} <b>{company}</b> raised {amt} "
-                    f"{title.replace(company, '').strip()} ({sector})"
-                )
+                line = f"{emoji_for_type('funding')} <b>{company}</b> raised {amt} {title.replace(company, '').strip()} ({sector})"
             else:
-                funding_line = (
-                    f"{emoji_for_type('funding')} <b>{company}</b> {title} ({sector})"
-                )
+                line = f"{emoji_for_type('funding')} <b>{company}</b> {title} ({sector})"
             if url:
-                funding_line += f" <a href='{url}' style='color:#0b5ed7;text-decoration:none;'>[{source}]</a>"
+                line += f" <a href='{url}' style='color:#0b5ed7;text-decoration:none;'>[{source}]</a>"
             elif source:
-                funding_line += f" [{source}]"
-            funding.append((amount or 0, funding_line))
+                line += f" [{source}]"
+            funding.append((amount or 0, line))
 
         elif event_type == "launch":
-            line = (
-                f"{emoji_for_type('launch')} <b>{company}</b> launched {title} ({sector})"
-            )
+            line = f"{emoji_for_type('launch')} <b>{company}</b> launched {title} ({sector})"
             if url:
                 line += f" <a href='{url}' style='color:#0b5ed7;text-decoration:none;'>[{source}]</a>"
             elif source:
@@ -129,9 +114,7 @@ def build_sections(events, news):
             launches.append(line)
 
         elif event_type == "revenue_milestone":
-            line = (
-                f"{emoji_for_type('revenue_milestone')} <b>{company}</b> reported {title} ({sector})"
-            )
+            line = f"{emoji_for_type('revenue_milestone')} <b>{company}</b> reported {title} ({sector})"
             if url:
                 line += f" <a href='{url}' style='color:#0b5ed7;text-decoration:none;'>[{source}]</a>"
             elif source:
@@ -139,7 +122,6 @@ def build_sections(events, news):
             revenue.append(line)
 
         else:
-            # dump anything else into launches-ish bucket
             line = f"{emoji_for_type(event_type)} <b>{company}</b> {title} ({sector})"
             if url:
                 line += f" <a href='{url}' style='color:#0b5ed7;text-decoration:none;'>[{source}]</a>"
@@ -147,21 +129,19 @@ def build_sections(events, news):
                 line += f" [{source}]"
             launches.append(line)
 
-    # news formatting
-    news_lines = []
-    for row in news:
-        (
-            _the_date,
-            company,
-            sector,
-            _event_type,
-            title,
-            _amount,
-            _currency,
-            source,
-            url,
-            _score,
-        ) = row
+    # news
+    for (
+        _the_date,
+        company,
+        sector,
+        _event_type,
+        title,
+        _amount,
+        _currency,
+        source,
+        url,
+        _score,
+    ) in news:
         line = f"{emoji_for_type('news')} <b>{company}</b> {title} ({sector})"
         if url:
             line += f" <a href='{url}' style='color:#0b5ed7;text-decoration:none;'>[{source}]</a>"
@@ -178,65 +158,56 @@ def summarize_top(funding, launches, revenue, news_lines):
     revenue_count = len(revenue)
     news_count = len(news_lines)
 
-    # sum disclosed funding (first element is amount)
     total_disclosed = int(sum(f[0] for f in funding if f[0]))
 
-    summary_bits = []
-    summary_bits.append(f"{funding_count} funding" if funding_count else "0 funding")
+    bits = [f"{funding_count} funding"]
     if launch_count:
-        summary_bits.append(f"{launch_count} launches")
+        bits.append(f"{launch_count} launches")
     if revenue_count:
-        summary_bits.append(f"{revenue_count} rev updates")
+        bits.append(f"{revenue_count} rev updates")
     if news_count:
-        summary_bits.append(f"{news_count} news")
-
-    summary_line = " · ".join(summary_bits)
-
+        bits.append(f"{news_count} news")
     if total_disclosed:
-        summary_line += f" · ${total_disclosed:,} disclosed"
+        bits.append(f"${total_disclosed:,} disclosed")
 
-    return summary_line
+    return " · ".join(bits)
 
 
 def format_html(funding, launches, revenue, news_lines):
     today_str = date.today().strftime("%b %d, %Y")
-    summary_line = summarize_top(funding, launches, revenue, news_lines)
+    summary = summarize_top(funding, launches, revenue, news_lines)
 
     html = [
         "<!doctype html>",
         "<html><body style='font-family:Helvetica,Arial,sans-serif;background:#f6f6f6;padding:20px;'>",
         "<table role='presentation' style='max-width:640px;margin:0 auto;background:#ffffff;border-radius:8px;padding:20px 24px;'>",
         f"<tr><td><h2 style='margin:0 0 6px 0;'>Daily Consumer People Brief — {today_str}</h2>",
-        f"<p style='margin:0 0 16px 0;color:#555;font-size:13px;'>{summary_line}</p>",
+        f"<p style='margin:0 0 16px 0;color:#555;font-size:13px;'>{summary}</p>",
         "<hr style='border:none;border-top:1px solid #eee;margin:16px 0;'>",
     ]
 
-    # Funding section
     if funding:
         html.append("<h3 style='margin:0 0 8px 0;font-size:15px;'>💰 Funding</h3>")
         for _amt, line in funding:
-            html.append(f"<p style='margin:5px 0 5px 0;'>{line}</p>")
+            html.append(f"<p style='margin:5px 0;'>{line}</p>")
         html.append("<hr style='border:none;border-top:1px solid #f0f0f0;margin:14px 0;'>")
 
-    # Launches section
     if launches:
         html.append("<h3 style='margin:0 0 8px 0;font-size:15px;'>🚀 Launches & Product</h3>")
         for line in launches:
-            html.append(f"<p style='margin:5px 0 5px 0;'>{line}</p>")
+            html.append(f"<p style='margin:5px 0;'>{line}</p>")
         html.append("<hr style='border:none;border-top:1px solid #f0f0f0;margin:14px 0;'>")
 
-    # Revenue
     if revenue:
         html.append("<h3 style='margin:0 0 8px 0;font-size:15px;'>📈 Revenue & Growth</h3>")
         for line in revenue:
-            html.append(f"<p style='margin:5px 0 5px 0;'>{line}</p>")
+            html.append(f"<p style='margin:5px 0;'>{line}</p>")
         html.append("<hr style='border:none;border-top:1px solid #f0f0f0;margin:14px 0;'>")
 
-    # News
     if news_lines:
         html.append("<h3 style='margin:0 0 8px 0;font-size:15px;'>🗞️ In the News</h3>")
         for line in news_lines:
-            html.append(f"<p style='margin:5px 0 5px 0;'>{line}</p>")
+            html.append(f"<p style='margin:5px 0;'>{line}</p>")
 
     if not (funding or launches or revenue or news_lines):
         html.append("<p>No items for today.</p>")
