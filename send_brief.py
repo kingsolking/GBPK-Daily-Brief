@@ -1,7 +1,7 @@
 import os
 import psycopg2
 from datetime import date
-from email.mime_text import MIMEText
+from email.mime.text import MIMEText
 import smtplib
 
 DB_URL = os.getenv("DATABASE_URL")
@@ -11,7 +11,6 @@ EMAIL_PASS = os.getenv("EMAIL_PASS")
 RECIPIENTS = [
     "solomon@gbpkcompany.com",
 ]
-
 
 def get_todays_items():
     conn = psycopg2.connect(DB_URL)
@@ -89,7 +88,7 @@ def format_html(rows):
         "<!doctype html>",
         "<html><body style='font-family:Helvetica,Arial,sans-serif;background:#f6f6f6;padding:20px;'>",
         "<table role='presentation' style='max-width:640px;margin:0 auto;background:#ffffff;border-radius:8px;padding:20px 24px;'>",
-        f"<tr><td><h2 style='margin:0 0 12px 0;'>Daily GBPK Brief — {today_str}</h2>",
+        f"<tr><td><h2 style='margin:0 0 12px 0;'>Daily Consumer People Brief — {today_str}</h2>",
         "<p style='margin:0 0 16px 0;color:#666;'>Top activity from companies you care about.</p>",
         "<hr style='border:none;border-top:1px solid #eee;margin:16px 0;'>",
     ]
@@ -112,28 +111,28 @@ def format_html(rows):
             emoji = emoji_for_type(event_type)
 
             if event_type == "funding" and amount:
-                amt = f\"${int(amount):,}\"
-                line = f\"{emoji} <b>{company}</b> raised {amt} {title.replace(company, '').strip()} ({sector})\"
+                amt = f"${int(amount):,}"
+                line = f"{emoji} <b>{company}</b> raised {amt} {title.replace(company, '').strip()} ({sector})"
             elif event_type == "launch":
-                line = f\"{emoji} <b>{company}</b> launched {title} ({sector})\"
+                line = f"{emoji} <b>{company}</b> launched {title} ({sector})"
             elif event_type == "revenue_milestone":
-                line = f\"{emoji} <b>{company}</b> reported {title} ({sector})\"
+                line = f"{emoji} <b>{company}</b> reported {title} ({sector})"
             elif event_type == "news":
-                line = f\"{emoji} <b>{company}</b> {title} ({sector})\"
+                line = f"{emoji} <b>{company}</b> {title} ({sector})"
             else:
-                line = f\"{emoji} <b>{company}</b> {title} ({sector})\"
+                line = f"{emoji} <b>{company}</b> {title} ({sector})"
 
             if url:
-                line += f\" <a href='{url}' style='color:#0b5ed7;text-decoration:none;'>[{source}]</a>\"
+                line += f" <a href='{url}' style='color:#0b5ed7;text-decoration:none;'>[{source}]</a>"
             elif source:
-                line += f\" [{source}]\"
+                line += f" [{source}]"
 
             html_parts.append(
-                f\"<p style='margin:6px 0 8px 0; line-height:1.5;'>{line}</p>\"
+                f"<p style='margin:6px 0 8px 0; line-height:1.5;'>{line}</p>"
             )
 
     html_parts.append("<hr style='border:none;border-top:1px solid #eee;margin:16px 0;'>")
-    html_parts.append("<p style='font-size:12px;color:#999;margin:0;'>GBPK internal daily brief.</p>")
+    html_parts.append("<p style='font-size:12px;color:#999;margin:0;'>Consumer People internal daily brief.</p>")
     html_parts.append("</td></tr></table></body></html>")
 
     return "".join(html_parts)
@@ -142,7 +141,7 @@ def format_html(rows):
 def send_email(html_body):
     today_str = date.today().strftime("%b %d, %Y")
     msg = MIMEText(html_body, "html")
-    msg["Subject"] = f"Daily GBPK Brief — {today_str}"
+    msg["Subject"] = f"Daily Consumer People Brief — {today_str}"
     msg["From"] = EMAIL_USER
     msg["To"] = ", ".join(RECIPIENTS)
 
